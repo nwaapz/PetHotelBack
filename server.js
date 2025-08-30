@@ -7,6 +7,10 @@ const validator = require('validator');
 const app = express();
 app.use(bodyParser.json());
 
+const cors = require('cors');
+app.use(cors());
+
+
 const USERS_FILE = './users.json';
 let tempCodes = {}; // Store temporary codes in memory
 

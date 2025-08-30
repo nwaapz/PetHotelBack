@@ -92,17 +92,18 @@ app.post('/register', async (req, res) => {
 
     // send code by email (or log)
     transporter.sendMail({
-      from: process.env.EMAIL_USER || 'no-reply@example.com',
-      to: email,
-      subject: 'Your verification code',
-      text: `Your verification code is: ${code}`
-    }, (err, info) => {
-      if (err) {
-        console.error('Error sending verification email:', err);
-        return res.status(500).json({ error: 'Failed to send verification code' });
-      }
-      return res.json({ message: 'Temporary code sent to email' });
-    });
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: 'Your verification code',
+        text: `Your verification code is: ${code}`
+        }, (err, info) => {
+        if (err) {
+            console.error('Error sending verification email:', err);
+            return res.status(500).json({ error: 'Failed to send verification code' });
+        }
+        console.log('Email sent:', info);
+        return res.json({ message: 'Temporary code sent to email' });
+        });
 
   } catch (err) {
     console.error('Register error:', err);

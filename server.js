@@ -10,6 +10,8 @@ app.use(bodyParser.json());
 const cors = require('cors');
 app.use(cors());
 
+app.use(express.json()); // to parse application/json
+app.use(express.urlencoded({ extended: true })); // if you send form data
 
 const USERS_FILE = './users.json';
 let tempCodes = {}; // Store temporary codes in memory

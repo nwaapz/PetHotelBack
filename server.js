@@ -14,8 +14,12 @@ app.use(express.urlencoded({ extended: true }));
 const USERS_FILE = './users.json';
 let users = [];
 if (fs.existsSync(USERS_FILE)) {
-  try { users = JSON.parse(fs.readFileSync(USERS_FILE)); }
-  catch (e) { console.error('Failed to read users file', e); users = []; }
+  try {
+    users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+  } catch (e) {
+    console.error('Failed to read users file', e);
+    users = [];
+  }
 }
 
 // Temp codes in memory: { email: { code, passwordHash, expires } }
@@ -56,7 +60,6 @@ if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       console.log('Subject:', mailOptions.subject);
       console.log('Text:', mailOptions.text);
       console.log('---------------------');
-      // simulate success
       setTimeout(() => cb && cb(null, { info: 'logged' }), 200);
     }
   };
@@ -147,4 +150,31 @@ app.post('/login', async (req, res) => {
   try {
     console.log('/login body:', req.body);
 
-    const
+    const email = asString(req.body?.email);
+    const password = asString(req.body?.password);
+
+    if (!email || !validator.isEmail(email)) {
+      return res.status(400).json({ error: 'Invalid or missing email' });
+    }
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const user = users.find(u => u.email === email);
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+
+    // SUCCESS - in production return a JWT token here
+    return res.json({ message: 'Login successful', email });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/', (req, res) => res.send('Server running'));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

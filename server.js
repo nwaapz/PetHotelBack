@@ -1,113 +1,150 @@
+// server.js
 const express = require('express');
-const bodyParser = require('body-parser');
 const fs = require('fs');
-const nodemailer = require('nodemailer');
 const validator = require('validator');
+const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
+const cors = require('cors');
 
 const app = express();
-app.use(bodyParser.json());
-
-const cors = require('cors');
 app.use(cors());
-
-app.use(express.json()); // to parse application/json
-app.use(express.urlencoded({ extended: true })); // if you send form data
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const USERS_FILE = './users.json';
-let tempCodes = {}; // Store temporary codes in memory
-
-// Load users or create empty array
 let users = [];
 if (fs.existsSync(USERS_FILE)) {
-    users = JSON.parse(fs.readFileSync(USERS_FILE));
+  try { users = JSON.parse(fs.readFileSync(USERS_FILE)); }
+  catch (e) { console.error('Failed to read users file', e); users = []; }
 }
 
-// Setup Nodemailer (Gmail example)
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: 'jexcoht@gmail.com',
-        pass: 'fckgwrhqq2U', // Use app password
-    }
-});
+// Temp codes in memory: { email: { code, passwordHash, expires } }
+const tempCodes = {};
 
-// Helper: save users to JSON
+// Helpers
+const asString = v => (typeof v === 'string') ? v.trim() : '';
+
 function saveUsers() {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
-// Helper: generate random code
-function generateCode(length = 6) {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+function generateCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
 }
 
-// Validate password complexity
 function isPasswordValid(password) {
-    return password.length >= 6 && /[A-Z]/.test(password) && /[0-9]/.test(password);
+  if (!password || password.length < 6) return false;
+  if (!/[A-Z]/.test(password)) return false;
+  if (!/[0-9]/.test(password)) return false;
+  return true;
 }
 
-// ----------------- ROUTES -----------------
+// Nodemailer setup — use env vars in production
+let transporter = null;
+if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  });
+  console.log('Nodemailer configured (Gmail).');
+} else {
+  console.log('EMAIL_USER/EMAIL_PASS not set — email will be logged to console instead of sent.');
+  transporter = {
+    sendMail: (mailOptions, cb) => {
+      console.log('---FAKE EMAIL SEND---');
+      console.log('To:', mailOptions.to);
+      console.log('Subject:', mailOptions.subject);
+      console.log('Text:', mailOptions.text);
+      console.log('---------------------');
+      // simulate success
+      setTimeout(() => cb && cb(null, { info: 'logged' }), 200);
+    }
+  };
+}
 
-// 1️⃣ Request registration (send code)
-app.post('/register', (req, res) => {
-    const { email, password } = req.body;
+// Routes
 
-    // Check email format
-    if (!validator.isEmail(email)) return res.status(400).json({ error: 'Invalid email format' });
+// Register: send verification code
+app.post('/register', async (req, res) => {
+  try {
+    console.log('/register body:', req.body);
 
-    // Check password complexity
-    if (!isPasswordValid(password)) return res.status(400).json({ error: 'Password must be >=6 chars, include 1 uppercase & 1 number' });
+    const email = asString(req.body?.email);
+    const password = asString(req.body?.password);
 
-    // Check email duplication
-    if (users.some(u => u.email === email)) return res.status(400).json({ error: 'Email already registered' });
+    if (!email || !validator.isEmail(email)) {
+      return res.status(400).json({ error: 'Invalid or missing email' });
+    }
+    if (!isPasswordValid(password)) {
+      return res.status(400).json({ error: 'Password must be >=6 chars, include 1 uppercase & 1 number' });
+    }
+    if (users.some(u => u.email === email)) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
 
-    // Generate temporary code
     const code = generateCode();
-    tempCodes[email] = { code, password };
+    const passwordHash = await bcrypt.hash(password, 10);
+    // store temporarily (expires in 15 minutes)
+    tempCodes[email] = { code, passwordHash, expires: Date.now() + 15 * 60 * 1000 };
 
-    // Send email
+    // send code by email (or log)
     transporter.sendMail({
-        from: 'YOUR_EMAIL@gmail.com',
-        to: email,
-        subject: 'Your Temporary Code',
-        text: `Your registration code is: ${code}`
+      from: process.env.EMAIL_USER || 'no-reply@example.com',
+      to: email,
+      subject: 'Your verification code',
+      text: `Your verification code is: ${code}`
     }, (err, info) => {
-        if (err) {
-            console.error(err);
-            return res.status(500).json({ error: 'Failed to send email' });
-        }
-        res.json({ message: 'Temporary code sent to email' });
+      if (err) {
+        console.error('Error sending verification email:', err);
+        return res.status(500).json({ error: 'Failed to send verification code' });
+      }
+      return res.json({ message: 'Temporary code sent to email' });
     });
+
+  } catch (err) {
+    console.error('Register error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// 2️⃣ Verify temporary code
+// Verify: confirm code and create user
 app.post('/verify', (req, res) => {
-    const { email, code } = req.body;
+  try {
+    console.log('/verify body:', req.body);
 
-    if (!tempCodes[email]) return res.status(400).json({ error: 'No registration request found' });
+    const email = asString(req.body?.email);
+    const code = asString(req.body?.code);
 
-    if (tempCodes[email].code !== code) return res.status(400).json({ error: 'Invalid code' });
+    if (!email || !validator.isEmail(email)) {
+      return res.status(400).json({ error: 'Invalid or missing email' });
+    }
+    if (!code) {
+      return res.status(400).json({ error: 'Code is required' });
+    }
 
-    // Save user
-    users.push({ email, password: tempCodes[email].password });
+    const entry = tempCodes[email];
+    if (!entry) return res.status(400).json({ error: 'No registration request found' });
+    if (Date.now() > (entry.expires || 0)) {
+      delete tempCodes[email];
+      return res.status(400).json({ error: 'Code expired' });
+    }
+    if (entry.code !== code) return res.status(400).json({ error: 'Invalid code' });
+
+    // create user
+    users.push({ email, passwordHash: entry.passwordHash, created: new Date().toISOString() });
     saveUsers();
 
-    // Remove temp code
     delete tempCodes[email];
-
-    res.json({ message: 'Registration successful' });
+    return res.json({ message: 'Registration successful' });
+  } catch (err) {
+    console.error('Verify error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// 3️⃣ Login
-app.post('/login', (req, res) => {
-    const { email, password } = req.body;
+// Login
+app.post('/login', async (req, res) => {
+  try {
+    console.log('/login body:', req.body);
 
-    const user = users.find(u => u.email === email && u.password === password);
-    if (!user) return res.status(400).json({ error: 'Invalid email or password' });
-
-    res.json({ message: 'Login successful' });
-});
-
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    const
